@@ -5,7 +5,7 @@ import os
 from collections import deque
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-import google.generativeai as genai  # <-- Классическая библиотека
+import google.generativeai as genai  # <-- ВОТ ПРАВИЛЬНЫЙ ИМПОРТ
 from aiohttp import web
 
 logging.basicConfig(level=logging.INFO)
@@ -20,7 +20,7 @@ if not TELEGRAM_TOKEN or not GOOGLE_API_KEY:
 # --- НАСТРОЙКА GEMINI (КЛАССИКА) ---
 genai.configure(api_key=GOOGLE_API_KEY)
 
-# Настройки безопасности (чтобы не блокировал ответы)
+# Настройки безопасности
 safety_settings = [
     {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
     {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
