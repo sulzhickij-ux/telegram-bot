@@ -5,7 +5,7 @@ import os
 from collections import deque
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from google import genai
+import google.generativeai as genai  # <-- Классическая библиотека
 from aiohttp import web
 
 logging.basicConfig(level=logging.INFO)
@@ -17,7 +17,17 @@ if not TELEGRAM_TOKEN or not GOOGLE_API_KEY:
     print("❌ ОШИБКА: Ключи не найдены!")
     exit(1)
 
-client = genai.Client(api_key=GOOGLE_API_KEY)
+# --- НАСТРОЙКА GEMINI (КЛАССИКА) ---
+genai.configure(api_key=GOOGLE_API_KEY)
+
+# Настройки безопасности (чтобы не блокировал ответы)
+safety_settings = [
+    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+]
+
 dp = Dispatcher()
 chat_history = {}
 
@@ -27,41 +37,24 @@ cursor = conn.cursor()
 cursor.execute('''CREATE TABLE IF NOT EXISTS debts (who TEXT, to_whom TEXT, amount REAL, reason TEXT)''')
 conn.commit()
 
-# --- БРОНЕБОЙНАЯ ФУНКЦИЯ (ПЕРЕБОР МОДЕЛЕЙ) ---
+# --- ФУНКЦИЯ GEMINI ---
 def ask_gemini(prompt):
-    # Список всех возможных вариантов написания.
-    # Бот будет пробовать их по очереди.
-    models_to_try = [
-        "gemini-2.0-flash-exp",     # Самая новая
-        "gemini-1.5-flash",         # Стандартная
-        "gemini-1.5-flash-001",     # Стабильная (часто работает, когда обычная нет)
-        "gemini-1.5-pro",           # Про версия
-        "gemini-1.5-pro-001",       # Про стабильная
-    ]
+    # Пробуем самую надежную модель
+    model_name = "gemini-1.5-flash"
     
-    last_error = ""
-    
-    for model_name in models_to_try:
-        try:
-            # Пытаемся стучаться
-            response = client.models.generate_content(model=model_name, contents=prompt)
-            if response.text:
-                return response.text
-        except Exception as e:
-            # Если не вышло - идем к следующей
-            last_error = str(e)
-            print(f"⚠️ {model_name} не сработала, пробую следующую...")
-            continue 
-            
-    return f"😔 Ни одна модель не ответила. Последняя ошибка: {last_error}"
+    try:
+        model = genai.GenerativeModel(model_name, safety_settings=safety_settings)
+        response = model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        return f"⚠️ Ошибка Gemini: {e}"
 
 @dp.message(Command("бот"))
 async def ask_bot(message: types.Message):
     q = message.text.replace("/бот", "").strip()
     if not q: return await message.reply("❓")
-    wait = await message.reply("🚀 Думаю...")
+    wait = await message.reply("⚡ Думаю...")
     
-    # Запускаем функцию в отдельном потоке, чтобы бот не вис
     answer = await asyncio.to_thread(ask_gemini, q)
     await wait.edit_text(answer)
 
@@ -107,7 +100,7 @@ async def hist(message: types.Message):
         if cid not in chat_history: chat_history[cid] = deque(maxlen=40)
         chat_history[cid].append(f"{message.from_user.first_name}: {message.text}")
 
-# Заглушка для Render (чтобы не было Port scan timeout)
+# Заглушка для Render
 async def dummy_server():
     async def handle(request): return web.Response(text="Bot is running")
     app = web.Application()
@@ -119,7 +112,7 @@ async def dummy_server():
     await site.start()
 
 async def main():
-    print("🚀 Старт (Multi-Model Version)...")
+    print("🚀 Старт (Classic Version)...")
     bot = Bot(token=TELEGRAM_TOKEN)
     await asyncio.gather(dummy_server(), dp.start_polling(bot))
 
