@@ -6,6 +6,7 @@ from collections import deque
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from google import genai
+from aiohttp import web  # <-- Добавили библиотеку для "обманки"
 
 logging.basicConfig(level=logging.INFO)
 
@@ -20,6 +21,7 @@ client = genai.Client(api_key=GOOGLE_API_KEY)
 dp = Dispatcher()
 chat_history = {}
 
+# База данных
 conn = sqlite3.connect('debts.db')
 cursor = conn.cursor()
 cursor.execute('''CREATE TABLE IF NOT EXISTS debts (who TEXT, to_whom TEXT, amount REAL, reason TEXT)''')
@@ -77,11 +79,30 @@ async def hist(message: types.Message):
         if cid not in chat_history: chat_history[cid] = deque(maxlen=40)
         chat_history[cid].append(f"{message.from_user.first_name}: {message.text}")
 
+# --- ФУНКЦИЯ "ОБМАНКА" ДЛЯ RENDER ---
+async def dummy_server():
+    async def handle(request):
+        return web.Response(text="Бот работает!")
+    
+    app = web.Application()
+    app.router.add_get('/', handle)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    # Render ищет порт 10000 или тот, который в переменной PORT
+    port = int(os.environ.get("PORT", 10000))
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    print(f"🌍 Фейковый сервер запущен на порту {port}")
+
 async def main():
-    print("🚀 Старт на Render...")
+    print("🚀 Старт на Render (с веб-сервером)...")
     bot = Bot(token=TELEGRAM_TOKEN)
-    await bot.delete_webhook(drop_pending_updates=True)
-    await dp.start_polling(bot)
+    
+    # Запускаем одновременно и бота, и сервер-обманку
+    await asyncio.gather(
+        dummy_server(),
+        dp.start_polling(bot)
+    )
 
 if __name__ == "__main__":
     asyncio.run(main())
