@@ -6,7 +6,7 @@ from collections import deque
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from google import genai
-from aiohttp import web  # <-- Добавили библиотеку для "обманки"
+from aiohttp import web
 
 logging.basicConfig(level=logging.INFO)
 
@@ -27,15 +27,36 @@ cursor = conn.cursor()
 cursor.execute('''CREATE TABLE IF NOT EXISTS debts (who TEXT, to_whom TEXT, amount REAL, reason TEXT)''')
 conn.commit()
 
+# --- УМНАЯ ФУНКЦИЯ ВЫБОРА МОДЕЛИ ---
+def ask_gemini(prompt):
+    # Твой список приоритетов. Сначала пробуем 3.0
+    models_to_try = [
+        "gemini-3.0-flash-exp",   # Твоя цель (Экспериментальная)
+        "gemini-3.0-flash",       # Твоя цель (Стабильная)
+        "gemini-2.0-flash-exp",   # Если 3.0 не дадут
+        "gemini-1.5-flash"        # Старый надежный вариант
+    ]
+    
+    for model_name in models_to_try:
+        try:
+            # Пытаемся стучаться в модель
+            response = client.models.generate_content(model=model_name, contents=prompt)
+            return response.text
+        except Exception as e:
+            # Если ошибка — пишем в лог и идем к следующей модели
+            print(f"⚠️ Модель {model_name} не сработала. Ошибка: {e}")
+            continue 
+            
+    return "😔 Все версии нейросети (3.0, 2.0, 1.5) сейчас недоступны."
+
 @dp.message(Command("бот"))
 async def ask_bot(message: types.Message):
     q = message.text.replace("/бот", "").strip()
     if not q: return await message.reply("❓")
-    wait = await message.reply("🧠")
-    try:
-         res = client.models.generate_content(model="gemini-1.5-flash", contents=q)
-         await wait.edit_text(res.text if res.text else "Пусто.")
-    except Exception as e: await wait.edit_text(f"Ошибка: {e}")
+    wait = await message.reply("🚀 Пробую Gemini 3.0...")
+    
+    answer = await asyncio.to_thread(ask_gemini, q)
+    await wait.edit_text(answer)
 
 @dp.message(Command("долг"))
 async def add_debt(message: types.Message):
@@ -66,11 +87,11 @@ async def clear(message: types.Message):
 async def judge(message: types.Message):
     cid = message.chat.id
     if cid not in chat_history: return await message.reply("Тишина...")
-    msg = await message.reply("⚖️")
-    try:
-        resp = client.models.generate_content(model="gemini-1.5-flash", contents=f"Рассуди смешно:\n{chr(10).join(chat_history[cid])}")
-        await msg.edit_text(resp.text)
-    except Exception as e: await msg.edit_text(str(e))
+    msg = await message.reply("⚖️ Судья читает дело...")
+    
+    prompt = f"Ты судья. Рассуди смешно и коротко этот чат:\n{chr(10).join(chat_history[cid])}"
+    answer = await asyncio.to_thread(ask_gemini, prompt)
+    await msg.edit_text(answer)
 
 @dp.message()
 async def hist(message: types.Message):
@@ -79,30 +100,21 @@ async def hist(message: types.Message):
         if cid not in chat_history: chat_history[cid] = deque(maxlen=40)
         chat_history[cid].append(f"{message.from_user.first_name}: {message.text}")
 
-# --- ФУНКЦИЯ "ОБМАНКА" ДЛЯ RENDER ---
+# Заглушка для Render
 async def dummy_server():
-    async def handle(request):
-        return web.Response(text="Бот работает!")
-    
+    async def handle(request): return web.Response(text="Bot is running")
     app = web.Application()
     app.router.add_get('/', handle)
     runner = web.AppRunner(app)
     await runner.setup()
-    # Render ищет порт 10000 или тот, который в переменной PORT
     port = int(os.environ.get("PORT", 10000))
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
-    print(f"🌍 Фейковый сервер запущен на порту {port}")
 
 async def main():
-    print("🚀 Старт на Render (с веб-сервером)...")
+    print("🚀 Старт (Ultimate Version)...")
     bot = Bot(token=TELEGRAM_TOKEN)
-    
-    # Запускаем одновременно и бота, и сервер-обманку
-    await asyncio.gather(
-        dummy_server(),
-        dp.start_polling(bot)
-    )
+    await asyncio.gather(dummy_server(), dp.start_polling(bot))
 
 if __name__ == "__main__":
     asyncio.run(main())
