@@ -27,34 +27,41 @@ cursor = conn.cursor()
 cursor.execute('''CREATE TABLE IF NOT EXISTS debts (who TEXT, to_whom TEXT, amount REAL, reason TEXT)''')
 conn.commit()
 
-# --- УМНАЯ ФУНКЦИЯ ВЫБОРА МОДЕЛИ ---
+# --- БРОНЕБОЙНАЯ ФУНКЦИЯ (ПЕРЕБОР МОДЕЛЕЙ) ---
 def ask_gemini(prompt):
-    # Твой список приоритетов. Сначала пробуем 3.0
+    # Список всех возможных вариантов написания.
+    # Бот будет пробовать их по очереди.
     models_to_try = [
-        "gemini-3.0-flash-exp",   # Твоя цель (Экспериментальная)
-        "gemini-3.0-flash",       # Твоя цель (Стабильная)
-        "gemini-2.0-flash-exp",   # Если 3.0 не дадут
-        "gemini-1.5-flash"        # Старый надежный вариант
+        "gemini-2.0-flash-exp",     # Самая новая
+        "gemini-1.5-flash",         # Стандартная
+        "gemini-1.5-flash-001",     # Стабильная (часто работает, когда обычная нет)
+        "gemini-1.5-pro",           # Про версия
+        "gemini-1.5-pro-001",       # Про стабильная
     ]
+    
+    last_error = ""
     
     for model_name in models_to_try:
         try:
-            # Пытаемся стучаться в модель
+            # Пытаемся стучаться
             response = client.models.generate_content(model=model_name, contents=prompt)
-            return response.text
+            if response.text:
+                return response.text
         except Exception as e:
-            # Если ошибка — пишем в лог и идем к следующей модели
-            print(f"⚠️ Модель {model_name} не сработала. Ошибка: {e}")
+            # Если не вышло - идем к следующей
+            last_error = str(e)
+            print(f"⚠️ {model_name} не сработала, пробую следующую...")
             continue 
             
-    return "😔 Все версии нейросети (3.0, 2.0, 1.5) сейчас недоступны."
+    return f"😔 Ни одна модель не ответила. Последняя ошибка: {last_error}"
 
 @dp.message(Command("бот"))
 async def ask_bot(message: types.Message):
     q = message.text.replace("/бот", "").strip()
     if not q: return await message.reply("❓")
-    wait = await message.reply("🚀 Пробую Gemini 3.0...")
+    wait = await message.reply("🚀 Думаю...")
     
+    # Запускаем функцию в отдельном потоке, чтобы бот не вис
     answer = await asyncio.to_thread(ask_gemini, q)
     await wait.edit_text(answer)
 
@@ -100,7 +107,7 @@ async def hist(message: types.Message):
         if cid not in chat_history: chat_history[cid] = deque(maxlen=40)
         chat_history[cid].append(f"{message.from_user.first_name}: {message.text}")
 
-# Заглушка для Render
+# Заглушка для Render (чтобы не было Port scan timeout)
 async def dummy_server():
     async def handle(request): return web.Response(text="Bot is running")
     app = web.Application()
@@ -112,7 +119,7 @@ async def dummy_server():
     await site.start()
 
 async def main():
-    print("🚀 Старт (Ultimate Version)...")
+    print("🚀 Старт (Multi-Model Version)...")
     bot = Bot(token=TELEGRAM_TOKEN)
     await asyncio.gather(dummy_server(), dp.start_polling(bot))
 
