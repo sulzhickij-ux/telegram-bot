@@ -5,7 +5,7 @@ import os
 from collections import deque
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-import google.generativeai as genai  # <-- ВОТ ПРАВИЛЬНЫЙ ИМПОРТ
+import google.generativeai as genai
 from aiohttp import web
 
 logging.basicConfig(level=logging.INFO)
@@ -17,10 +17,8 @@ if not TELEGRAM_TOKEN or not GOOGLE_API_KEY:
     print("❌ ОШИБКА: Ключи не найдены!")
     exit(1)
 
-# --- НАСТРОЙКА GEMINI (КЛАССИКА) ---
 genai.configure(api_key=GOOGLE_API_KEY)
-
-# Настройки безопасности
+# Настройки безопасности (отключаем цензуру по максимуму)
 safety_settings = [
     {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
     {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
@@ -30,30 +28,45 @@ safety_settings = [
 
 dp = Dispatcher()
 chat_history = {}
-
-# База данных
 conn = sqlite3.connect('debts.db')
 cursor = conn.cursor()
 cursor.execute('''CREATE TABLE IF NOT EXISTS debts (who TEXT, to_whom TEXT, amount REAL, reason TEXT)''')
 conn.commit()
 
-# --- ФУНКЦИЯ GEMINI ---
+# --- ФУНКЦИЯ-ТЕРМИНАТОР ---
+# Она будет перебирать модели, начиная с 3.0, пока не пробьет Гугл
 def ask_gemini(prompt):
-    # Пробуем самую надежную модель
-    model_name = "gemini-1.5-flash"
+    models_to_try = [
+        "gemini-3.0-flash",          # ТВОЙ ЗАПРОС
+        "gemini-3.0-flash-exp",      # Экспериментальная 3.0
+        "gemini-3.0-pro",            # Прошка 3.0
+        "gemini-2.0-flash-exp",      # Самая свежая из публичных
+        "gemini-1.5-flash-latest",   # Последняя стабильная
+        "gemini-1.5-flash-001",      # Резерв
+    ]
     
-    try:
-        model = genai.GenerativeModel(model_name, safety_settings=safety_settings)
-        response = model.generate_content(prompt)
-        return response.text
-    except Exception as e:
-        return f"⚠️ Ошибка Gemini: {e}"
+    last_error = ""
+    
+    for model_name in models_to_try:
+        try:
+            # Пытаемся подключиться к конкретной версии
+            model = genai.GenerativeModel(model_name, safety_settings=safety_settings)
+            response = model.generate_content(prompt)
+            if response.text:
+                return f"(Модель: {model_name})\n{response.text}"
+        except Exception as e:
+            # Если Гугл говорит "нет такой модели", пробуем следующую
+            print(f"⚠️ {model_name} отказ: {e}")
+            last_error = str(e)
+            continue
+            
+    return f"😔 Google API отклонил все версии (даже 3.0). Ошибка: {last_error}"
 
 @dp.message(Command("бот"))
 async def ask_bot(message: types.Message):
     q = message.text.replace("/бот", "").strip()
     if not q: return await message.reply("❓")
-    wait = await message.reply("⚡ Думаю...")
+    wait = await message.reply("🚀 Запрос к Gemini 3.0...")
     
     answer = await asyncio.to_thread(ask_gemini, q)
     await wait.edit_text(answer)
@@ -102,7 +115,7 @@ async def hist(message: types.Message):
 
 # Заглушка для Render
 async def dummy_server():
-    async def handle(request): return web.Response(text="Bot is running")
+    async def handle(request): return web.Response(text="Alive")
     app = web.Application()
     app.router.add_get('/', handle)
     runner = web.AppRunner(app)
@@ -112,7 +125,7 @@ async def dummy_server():
     await site.start()
 
 async def main():
-    print("🚀 Старт (Classic Version)...")
+    print("🚀 Старт (Gemini 3.0 Priority)...")
     bot = Bot(token=TELEGRAM_TOKEN)
     await asyncio.gather(dummy_server(), dp.start_polling(bot))
 
