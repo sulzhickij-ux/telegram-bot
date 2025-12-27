@@ -18,7 +18,8 @@ if not TELEGRAM_TOKEN or not GOOGLE_API_KEY:
     exit(1)
 
 genai.configure(api_key=GOOGLE_API_KEY)
-# Настройки безопасности (отключаем цензуру по максимуму)
+
+# Настройки без цензуры
 safety_settings = [
     {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
     {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
@@ -33,40 +34,49 @@ cursor = conn.cursor()
 cursor.execute('''CREATE TABLE IF NOT EXISTS debts (who TEXT, to_whom TEXT, amount REAL, reason TEXT)''')
 conn.commit()
 
-# --- ФУНКЦИЯ-ТЕРМИНАТОР ---
-# Она будет перебирать модели, начиная с 3.0, пока не пробьет Гугл
+# --- ФУНКЦИЯ АВТО-ПОИСКА МОДЕЛИ ---
+def get_any_working_model():
+    try:
+        # Спрашиваем у Гугла: "Что мне доступно?"
+        print("🔍 Сканирую доступные модели...")
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                print(f"✅ Найдена модель: {m.name}")
+                return m.name # Возвращаем первую попавшуюся
+    except Exception as e:
+        print(f"❌ Ошибка списка моделей: {e}")
+    return None
+
+# Глобальная переменная для имени модели
+CURRENT_MODEL_NAME = None
+
 def ask_gemini(prompt):
-    models_to_try = [
-        "gemini-3.0-flash",          # ТВОЙ ЗАПРОС
-        "gemini-3.0-flash-exp",      # Экспериментальная 3.0
-        "gemini-3.0-pro",            # Прошка 3.0
-        "gemini-2.0-flash-exp",      # Самая свежая из публичных
-        "gemini-1.5-flash-latest",   # Последняя стабильная
-        "gemini-1.5-flash-001",      # Резерв
-    ]
+    global CURRENT_MODEL_NAME
     
-    last_error = ""
-    
-    for model_name in models_to_try:
-        try:
-            # Пытаемся подключиться к конкретной версии
-            model = genai.GenerativeModel(model_name, safety_settings=safety_settings)
-            response = model.generate_content(prompt)
-            if response.text:
-                return f"(Модель: {model_name})\n{response.text}"
-        except Exception as e:
-            # Если Гугл говорит "нет такой модели", пробуем следующую
-            print(f"⚠️ {model_name} отказ: {e}")
-            last_error = str(e)
-            continue
-            
-    return f"😔 Google API отклонил все версии (даже 3.0). Ошибка: {last_error}"
+    # Если мы еще не нашли модель - ищем её сейчас
+    if not CURRENT_MODEL_NAME:
+        found = get_any_working_model()
+        if found:
+            CURRENT_MODEL_NAME = found
+        else:
+            return "🆘 Бот подключен, но Google не дает ни одной модели. Проверь API Key."
+
+    try:
+        # Используем ту модель, которую сами нашли в списке
+        model = genai.GenerativeModel(CURRENT_MODEL_NAME, safety_settings=safety_settings)
+        response = model.generate_content(prompt)
+        if response.text:
+            return f"🤖 ({CURRENT_MODEL_NAME}):\n{response.text}"
+    except Exception as e:
+        # Если найденная модель сломалась, сбрасываем поиск
+        CURRENT_MODEL_NAME = None
+        return f"⚠️ Ошибка генерации: {e}"
 
 @dp.message(Command("бот"))
 async def ask_bot(message: types.Message):
     q = message.text.replace("/бот", "").strip()
     if not q: return await message.reply("❓")
-    wait = await message.reply("🚀 Запрос к Gemini 3.0...")
+    wait = await message.reply("🔍 Подбираю модель и думаю...")
     
     answer = await asyncio.to_thread(ask_gemini, q)
     await wait.edit_text(answer)
@@ -125,7 +135,19 @@ async def dummy_server():
     await site.start()
 
 async def main():
-    print("🚀 Старт (Gemini 3.0 Priority)...")
+    print("🚀 Старт (Auto-Detect Model)...")
+    # При старте сразу ищем рабочую модель
+    try:
+        found = await asyncio.to_thread(get_any_working_model)
+        if found:
+            global CURRENT_MODEL_NAME
+            CURRENT_MODEL_NAME = found
+            print(f"🏆 Бот будет использовать: {CURRENT_MODEL_NAME}")
+        else:
+            print("💀 ВНИМАНИЕ: Гугл не вернул ни одной модели!")
+    except:
+        pass
+
     bot = Bot(token=TELEGRAM_TOKEN)
     await asyncio.gather(dummy_server(), dp.start_polling(bot))
 
