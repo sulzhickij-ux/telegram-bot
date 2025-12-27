@@ -10,6 +10,7 @@ from aiohttp import web
 
 logging.basicConfig(level=logging.INFO)
 
+# --- КЛЮЧИ ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN") 
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
 
@@ -17,9 +18,8 @@ if not TELEGRAM_TOKEN or not GOOGLE_API_KEY:
     print("❌ ОШИБКА: Ключи не найдены!")
     exit(1)
 
+# --- НАСТРОЙКИ AI ---
 genai.configure(api_key=GOOGLE_API_KEY)
-
-# Настройки без цензуры
 safety_settings = [
     {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
     {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
@@ -34,53 +34,24 @@ cursor = conn.cursor()
 cursor.execute('''CREATE TABLE IF NOT EXISTS debts (who TEXT, to_whom TEXT, amount REAL, reason TEXT)''')
 conn.commit()
 
-# --- ФУНКЦИЯ АВТО-ПОИСКА МОДЕЛИ ---
-def get_any_working_model():
-    try:
-        # Спрашиваем у Гугла: "Что мне доступно?"
-        print("🔍 Сканирую доступные модели...")
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                print(f"✅ Найдена модель: {m.name}")
-                return m.name # Возвращаем первую попавшуюся
-    except Exception as e:
-        print(f"❌ Ошибка списка моделей: {e}")
-    return None
+# --- СПИСОК ИМЕН, НА КОТОРЫЕ ОТЗЫВАЕТСЯ БОТ ---
+BOT_NAMES = ["хуюпсик", "бот", "bot", "эй ты"]
 
-# Глобальная переменная для имени модели
-CURRENT_MODEL_NAME = None
-
+# --- ФУНКЦИЯ ЗАПРОСА К МОЗГАМ ---
 def ask_gemini(prompt):
-    global CURRENT_MODEL_NAME
-    
-    # Если мы еще не нашли модель - ищем её сейчас
-    if not CURRENT_MODEL_NAME:
-        found = get_any_working_model()
-        if found:
-            CURRENT_MODEL_NAME = found
-        else:
-            return "🆘 Бот подключен, но Google не дает ни одной модели. Проверь API Key."
+    models_to_try = [
+        "gemini-3.0-flash", "gemini-3.0-flash-exp", 
+        "gemini-2.0-flash-exp", "gemini-1.5-flash", "gemini-1.5-flash-001"
+    ]
+    for model_name in models_to_try:
+        try:
+            model = genai.GenerativeModel(model_name, safety_settings=safety_settings)
+            response = model.generate_content(prompt)
+            if response.text: return response.text
+        except: continue
+    return "😔 Мозги перегрелись (ошибка API)."
 
-    try:
-        # Используем ту модель, которую сами нашли в списке
-        model = genai.GenerativeModel(CURRENT_MODEL_NAME, safety_settings=safety_settings)
-        response = model.generate_content(prompt)
-        if response.text:
-            return f"🤖 ({CURRENT_MODEL_NAME}):\n{response.text}"
-    except Exception as e:
-        # Если найденная модель сломалась, сбрасываем поиск
-        CURRENT_MODEL_NAME = None
-        return f"⚠️ Ошибка генерации: {e}"
-
-@dp.message(Command("бот"))
-async def ask_bot(message: types.Message):
-    q = message.text.replace("/бот", "").strip()
-    if not q: return await message.reply("❓")
-    wait = await message.reply("🔍 Подбираю модель и думаю...")
-    
-    answer = await asyncio.to_thread(ask_gemini, q)
-    await wait.edit_text(answer)
-
+# --- КОМАНДЫ ---
 @dp.message(Command("долг"))
 async def add_debt(message: types.Message):
     try:
@@ -110,18 +81,37 @@ async def clear(message: types.Message):
 async def judge(message: types.Message):
     cid = message.chat.id
     if cid not in chat_history: return await message.reply("Тишина...")
-    msg = await message.reply("⚖️ Судья читает дело...")
-    
-    prompt = f"Ты судья. Рассуди смешно и коротко этот чат:\n{chr(10).join(chat_history[cid])}"
+    msg = await message.reply("⚖️ Читаю дело...")
+    prompt = f"Ты судья. Рассуди смешно этот чат:\n{chr(10).join(chat_history[cid])}"
     answer = await asyncio.to_thread(ask_gemini, prompt)
     await msg.edit_text(answer)
 
+# --- ГЛАВНЫЙ ОБРАБОТЧИК ТЕКСТА ---
 @dp.message()
-async def hist(message: types.Message):
-    if message.text and not message.text.startswith('/'):
-        cid = message.chat.id
-        if cid not in chat_history: chat_history[cid] = deque(maxlen=40)
-        chat_history[cid].append(f"{message.from_user.first_name}: {message.text}")
+async def handle_all_messages(message: types.Message):
+    if not message.text or message.text.startswith('/'): return
+
+    # 1. Сохраняем в историю (для судьи)
+    cid = message.chat.id
+    if cid not in chat_history: chat_history[cid] = deque(maxlen=40)
+    chat_history[cid].append(f"{message.from_user.first_name}: {message.text}")
+
+    # 2. Проверяем, зовут ли бота по имени
+    text_lower = message.text.lower()
+    
+    # Проверяем, есть ли одно из имен в сообщении ИЛИ это личка с ботом
+    is_private = message.chat.type == 'private'
+    is_called = any(name in text_lower for name in BOT_NAMES)
+
+    if is_called or is_private:
+        # Показываем, что бот "печатает"
+        await message.bot.send_chat_action(chat_id=cid, action="typing")
+        
+        # Генерируем ответ
+        answer = await asyncio.to_thread(ask_gemini, message.text)
+        
+        # Отвечаем реплаем на сообщение
+        await message.reply(answer)
 
 # Заглушка для Render
 async def dummy_server():
@@ -135,19 +125,7 @@ async def dummy_server():
     await site.start()
 
 async def main():
-    print("🚀 Старт (Auto-Detect Model)...")
-    # При старте сразу ищем рабочую модель
-    try:
-        found = await asyncio.to_thread(get_any_working_model)
-        if found:
-            global CURRENT_MODEL_NAME
-            CURRENT_MODEL_NAME = found
-            print(f"🏆 Бот будет использовать: {CURRENT_MODEL_NAME}")
-        else:
-            print("💀 ВНИМАНИЕ: Гугл не вернул ни одной модели!")
-    except:
-        pass
-
+    print("🚀 Старт (Режим общения по имени)...")
     bot = Bot(token=TELEGRAM_TOKEN)
     await asyncio.gather(dummy_server(), dp.start_polling(bot))
 
