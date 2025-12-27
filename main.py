@@ -34,51 +34,50 @@ cursor = conn.cursor()
 cursor.execute('''CREATE TABLE IF NOT EXISTS debts (who TEXT, to_whom TEXT, amount REAL, reason TEXT)''')
 conn.commit()
 
-# --- СПИСОК ИМЕН ---
-BOT_NAMES = ["хуюпсик", "бот", "bot", "эй ты", "брат"]
+# Глобальная переменная, куда мы сохраним имя модели
+FOUND_MODEL = None
 
-# --- ФУНКЦИЯ "ВСЕЯДНАЯ" ---
+# --- ФУНКЦИЯ ПОИСКА МОДЕЛИ (ГЛАВНАЯ ФИШКА) ---
+def find_model():
+    print("🕵️‍♂️ Опрашиваю сервера Google...")
+    try:
+        # Просим Гугл дать список всего, что у него есть
+        for m in genai.list_models():
+            # Нам нужны только те, которые умеют генерировать текст
+            if 'generateContent' in m.supported_generation_methods:
+                print(f"✅ НАЙДЕНА РАБОЧАЯ МОДЕЛЬ: {m.name}")
+                return m.name
+    except Exception as e:
+        print(f"❌ Не удалось получить список: {e}")
+    return None
+
+# --- ФУНКЦИЯ ГЕНЕРАЦИИ ---
 def ask_gemini(prompt):
-    models_to_try = [
-        # 1. Свежак (Если повезет)
-        "gemini-3.0-flash",
-        
-        # 2. Мощные (Но могут быть лимиты)
-        "gemini-2.0-flash-exp",
-        "gemini-2.0-flash",
-        
-        # 3. Рабочие лошадки (1500 запросов в день)
-        "gemini-1.5-flash",
-        "gemini-1.5-flash-latest",
-        "gemini-1.5-flash-001",
-        "gemini-1.5-pro",
-        
-        # 4. Древняя классика (Резерв)
-        "gemini-pro"
-    ]
+    global FOUND_MODEL
     
-    last_error = ""
-    
-    for model_name in models_to_try:
-        try:
-            model = genai.GenerativeModel(model_name, safety_settings=safety_settings)
-            response = model.generate_content(prompt)
-            if response.text:
-                # Если сработало - выходим из цикла и отдаем ответ
-                return response.text
-        except Exception as e:
-            # Если 404 (нет модели) или 429 (лимиты) - пробуем следующую
-            last_error = str(e)
-            continue 
-            
-    return f"☠️ Все версии (3.0, 2.0, 1.5) недоступны. Ошибка: {last_error}"
+    # Если модель еще не найдена (первый запуск)
+    if not FOUND_MODEL:
+        FOUND_MODEL = find_model()
+        if not FOUND_MODEL:
+            return "🆘 КРАХ: Google API работает, но список моделей пуст! Проверь права API ключа."
+
+    try:
+        # Используем ту модель, которую дал сам Гугл
+        model = genai.GenerativeModel(FOUND_MODEL, safety_settings=safety_settings)
+        response = model.generate_content(prompt)
+        if response.text:
+            return f"🤖 ({FOUND_MODEL}):\n{response.text}"
+    except Exception as e:
+        # Если модель сломалась, пробуем найти новую
+        FOUND_MODEL = None
+        return f"⚠️ Ошибка {e}. Попробуй еще раз."
 
 # --- ОБРАБОТЧИКИ ---
 @dp.message(Command("бот"))
 async def ask_bot(message: types.Message):
     q = message.text.replace("/бот", "").strip()
     if not q: return await message.reply("❓")
-    wait = await message.reply("⚡")
+    wait = await message.reply("🔍 Ищу модель...")
     answer = await asyncio.to_thread(ask_gemini, q)
     await wait.edit_text(answer)
 
@@ -111,7 +110,7 @@ async def clear(message: types.Message):
 async def judge(message: types.Message):
     cid = message.chat.id
     if cid not in chat_history: return await message.reply("Тишина...")
-    msg = await message.reply("⚖️ Судья в деле...")
+    msg = await message.reply("⚖️ Судья читает дело...")
     prompt = f"Ты судья. Рассуди смешно этот чат:\n{chr(10).join(chat_history[cid])}"
     answer = await asyncio.to_thread(ask_gemini, prompt)
     await msg.edit_text(answer)
@@ -125,10 +124,8 @@ async def hist(message: types.Message):
     
     # Обработка имени
     text_lower = message.text.lower()
-    is_private = message.chat.type == 'private'
-    is_called = any(name in text_lower for name in BOT_NAMES)
-
-    if is_called or is_private:
+    names = ["хуюпсик", "бот", "bot", "эй ты", "брат"]
+    if any(n in text_lower for n in names) or message.chat.type == 'private':
         await message.bot.send_chat_action(message.chat.id, "typing")
         ans = await asyncio.to_thread(ask_gemini, message.text)
         await message.reply(ans)
@@ -145,7 +142,7 @@ async def dummy_server():
     await site.start()
 
 async def main():
-    print("🚀 Старт (3.0 -> 2.0 -> 1.5)...")
+    print("🚀 Старт (Full Auto-Discovery)...")
     bot = Bot(token=TELEGRAM_TOKEN)
     await asyncio.gather(dummy_server(), dp.start_polling(bot))
 
