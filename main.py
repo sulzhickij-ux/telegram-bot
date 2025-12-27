@@ -34,22 +34,48 @@ cursor = conn.cursor()
 cursor.execute('''CREATE TABLE IF NOT EXISTS debts (who TEXT, to_whom TEXT, amount REAL, reason TEXT)''')
 conn.commit()
 
-# --- СПИСОК ИМЕН, НА КОТОРЫЕ ОТЗЫВАЕТСЯ БОТ ---
-BOT_NAMES = ["хуюпсик", "бот", "bot", "эй ты"]
+# --- СПИСОК ИМЕН (На что отзывается) ---
+BOT_NAMES = ["хуюпсик", "бот", "bot", "эй ты", "брат"]
 
-# --- ФУНКЦИЯ ЗАПРОСА К МОЗГАМ ---
+# --- ФУНКЦИЯ-ТЕРМИНАТОР (ПЕРЕБОР ВСЕХ ВЕРСИЙ) ---
 def ask_gemini(prompt):
     models_to_try = [
-        "gemini-3.0-flash", "gemini-3.0-flash-exp", 
-        "gemini-2.0-flash-exp", "gemini-1.5-flash", "gemini-1.5-flash-001"
+        # --- БЛОК 3.0 (Твое требование) ---
+        "gemini-3.0-pro",
+        "gemini-3.0-pro-exp",
+        "gemini-3.0-flash",
+        
+        # --- БЛОК 2.0 (Самая свежая реальная) ---
+        "gemini-2.0-flash-exp",
+        "gemini-exp-1206",
+        
+        # --- БЛОК 1.5 (Классика) ---
+        "gemini-1.5-pro",
+        "gemini-1.5-pro-latest",
+        "gemini-1.5-flash",
+        "gemini-1.5-flash-8b",
+        "gemini-1.5-flash-001",
+        
+        # --- БЛОК СТАРЫХ (Резерв) ---
+        "gemini-pro"
     ]
+    
+    last_error = ""
+    
     for model_name in models_to_try:
         try:
+            # Пытаемся пробить конкретную модель
             model = genai.GenerativeModel(model_name, safety_settings=safety_settings)
             response = model.generate_content(prompt)
-            if response.text: return response.text
-        except: continue
-    return "😔 Мозги перегрелись (ошибка API)."
+            if response.text:
+                # Если сработало - возвращаем ответ (и имя модели для проверки)
+                return response.text
+        except Exception as e:
+            # Если не сработало - молча идем к следующей
+            last_error = str(e)
+            continue
+            
+    return f"😵 Гугл отклонил ВСЕ версии (от 3.0 до 1.0). Ошибка: {last_error}"
 
 # --- КОМАНДЫ ---
 @dp.message(Command("долг"))
@@ -81,39 +107,32 @@ async def clear(message: types.Message):
 async def judge(message: types.Message):
     cid = message.chat.id
     if cid not in chat_history: return await message.reply("Тишина...")
-    msg = await message.reply("⚖️ Читаю дело...")
+    msg = await message.reply("⚖️ Изучаю протокол...")
     prompt = f"Ты судья. Рассуди смешно этот чат:\n{chr(10).join(chat_history[cid])}"
     answer = await asyncio.to_thread(ask_gemini, prompt)
     await msg.edit_text(answer)
 
-# --- ГЛАВНЫЙ ОБРАБОТЧИК ТЕКСТА ---
+# --- ГЛАВНЫЙ ОБРАБОТЧИК ТЕКСТА (ПО ИМЕНИ) ---
 @dp.message()
 async def handle_all_messages(message: types.Message):
     if not message.text or message.text.startswith('/'): return
 
-    # 1. Сохраняем в историю (для судьи)
+    # 1. Сохраняем (для судьи)
     cid = message.chat.id
     if cid not in chat_history: chat_history[cid] = deque(maxlen=40)
     chat_history[cid].append(f"{message.from_user.first_name}: {message.text}")
 
-    # 2. Проверяем, зовут ли бота по имени
+    # 2. Проверяем имя
     text_lower = message.text.lower()
-    
-    # Проверяем, есть ли одно из имен в сообщении ИЛИ это личка с ботом
     is_private = message.chat.type == 'private'
     is_called = any(name in text_lower for name in BOT_NAMES)
 
     if is_called or is_private:
-        # Показываем, что бот "печатает"
         await message.bot.send_chat_action(chat_id=cid, action="typing")
-        
-        # Генерируем ответ
         answer = await asyncio.to_thread(ask_gemini, message.text)
-        
-        # Отвечаем реплаем на сообщение
         await message.reply(answer)
 
-# Заглушка для Render
+# Заглушка
 async def dummy_server():
     async def handle(request): return web.Response(text="Alive")
     app = web.Application()
@@ -125,7 +144,7 @@ async def dummy_server():
     await site.start()
 
 async def main():
-    print("🚀 Старт (Режим общения по имени)...")
+    print("🚀 Старт (Ultimate List)...")
     bot = Bot(token=TELEGRAM_TOKEN)
     await asyncio.gather(dummy_server(), dp.start_polling(bot))
 
